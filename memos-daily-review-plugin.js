@@ -47,7 +47,7 @@
     COUNT_OPTIONS: [4, 8, 12, 16, 20, 24],
     API_PAGE_SIZE: 1000,
     API_MEMO_ORDER_BY: 'create_time desc',
-    POOL_TTL_MS: 6 * 60 * 60 * 1000,
+    POOL_TTL_MS: 10 * 60 * 1000,
     POOL_MAX_PAGES_ALL: 6,
     POOL_MAX_PAGES_SCOPED: 3,
     POOL_TARGET_MULTIPLIER: 6,
@@ -4193,6 +4193,8 @@
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
+      // Clear pool cache so shuffle fetches latest content from server
+      localStorage.removeItem(CONFIG.POOL_KEY);
       try {
         await this.loadDeck(true);
       } catch (error) {
