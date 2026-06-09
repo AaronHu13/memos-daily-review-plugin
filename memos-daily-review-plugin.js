@@ -6106,13 +6106,11 @@
 
     async ensureActiveSubTag(planEntry, settings) {
       if (!planEntry || !planEntry.data || !planEntry.data.subtags) return;
-      if (planEntry.data.subtags.active) return;
 
       const parentTag = (planEntry.data.plan.tagFilter.tags || [])[0] || '';
       if (!parentTag) return;
 
       // Fetch pool without subtag filter to discover all subtags
-      // Clear plan-specific cache to avoid stale data
       localStorage.removeItem(CONFIG.POOL_KEY);
       const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
       const allPool = await this.getPoolMemos(settings.timeRange, desiredPoolSize, null);
@@ -6121,37 +6119,46 @@
         return mTags.some(t => t === parentTag || t.startsWith(parentTag + '/')) && !mTags.includes(CONFIG.PLAN_MEMO_TAG);
       });
       const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
-      console.log('[DailyReview] ensureActiveSubTag - parent:', parentTag, 'pool:', filteredPool.length, 'subtags found:', allSubTags);
+      console.log('[DailyReview] ensureActiveSubTag - parent:', parentTag, 'pool:', filteredPool.length, 'subtags found:', allSubTags.length);
 
-      // If no sub-tags found (no parent/child hierarchy), fall back to flat behavior
+      // If no sub-tags found, fall back to flat behavior
       if (allSubTags.length === 0) {
-        console.log('[DailyReview] No sub-tags found for', parentTag, '- falling back to flat mode behavior');
-        // Temporarily treat as flat: remove subtags field so buildDeckFromPool uses flat coverage
+        console.log('[DailyReview] No sub-tags found for', parentTag, '- falling back to flat mode');
         planEntry.data._subtagFallbackToFlat = true;
         return;
       }
 
-      // Check if current subtag review is complete
+      // Check if current active subtag is complete
       const activeSubTag = coverageService.getActiveSubTag(planEntry);
       if (activeSubTag) {
         const subTagPool = filteredPool.filter(m => {
           const mTags = Array.isArray(m.tags) ? m.tags : [];
           return mTags.includes(activeSubTag);
         });
+        console.log('[DailyReview] Active subtag:', activeSubTag, 'pool:', subTagPool.length, 'coverage:', JSON.stringify(planEntry.data.history.coverage));
+
         if (coverageService.isCycleComplete(planEntry, subTagPool)) {
+          console.log('[DailyReview] Subtag', activeSubTag, 'complete! Moving to next.');
           coverageService.markSubTagDone(planEntry, activeSubTag);
           this.cycleNotification = i18n.t('subtag_complete');
           const planId = planEntry.data.plan.id;
           localStorage.removeItem(`${CONFIG.POOL_KEY}-${planId}`);
+
+          // Select next subtag
+          const next = coverageService.selectNextSubTag(planEntry, allSubTags);
+          if (!next) {
+            this.cycleNotification = i18n.t('all_subtags_done');
+          }
+          return;
         }
+        // Active subtag not complete yet, keep it
+        return;
       }
 
-      // Select next subtag if none active
-      if (!planEntry.data.subtags.active) {
-        const next = coverageService.selectNextSubTag(planEntry, allSubTags);
-        if (!next) {
-          this.cycleNotification = i18n.t('all_subtags_done');
-        }
+      // No active subtag — select next one
+      const next = coverageService.selectNextSubTag(planEntry, allSubTags);
+      if (!next) {
+        this.cycleNotification = i18n.t('all_subtags_done');
       }
     }
   };
