@@ -5920,11 +5920,12 @@
         }
       }
 
+      console.log('[DailyReview] Coverage-first: eligible:', eligible.length, 'unseen:', unseen.length, 'seen:', seen.length);
+
       // Check if cycle is complete
       if (unseen.length === 0 && eligible.length > 0) {
         coverageService.advanceCycle(planEntry);
         this.cycleNotification = i18n.t('cycle_complete');
-        // After advancing, all are unseen in new cycle - recurse with updated state
         return this.buildDeckCoverageFirst(eligible, settings, today, seedPrefix, planEntry);
       }
 
@@ -5934,10 +5935,12 @@
       // Score unseen memos by priority
       const scored = this.scoreByReviewPriority(unseen, historyObj, today, seedPrefix);
 
-      // Pick with diversity and NO_REPEAT_DAYS
+      // For subtag mode, skip NO_REPEAT_DAYS entirely (goal is to finish the subtag quickly)
+      // For flat mode, use normal relaxation strategy
+      const isSubtagMode = planEntry.data && planEntry.data.plan && planEntry.data.plan.type === 'subtag' && !planEntry.data._subtagFallbackToFlat;
       const picked = [];
       const pickedIds = new Set();
-      const relax = [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
+      const relax = isSubtagMode ? [0] : [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
 
       for (const minDays of relax) {
         if (picked.length >= settings.count) break;
