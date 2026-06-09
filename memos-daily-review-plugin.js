@@ -441,13 +441,15 @@
             }))
         : [];
       const content = memo?.content || '';
+      // Prefer API-provided tags over content extraction
+      const apiTags = Array.isArray(memo?.tags) && memo.tags.length > 0 ? memo.tags : null;
       return {
         id,
         name: memo?.name,
         uid: memo?.uid,
         createTime: memo?.createTime,
         content,
-        tags: this.extractTags(content),
+        tags: apiTags || this.extractTags(content),
         attachments
       };
     },
@@ -5598,24 +5600,30 @@
       if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.tagFilter) {
         const tf = planEntry.data.plan.tagFilter;
         console.log('[DailyReview] Tag filter:', JSON.stringify(tf));
+
+        // Tag matching: supports prefix matching (e.g. "weread" matches "weread/bookname")
+        const tagMatches = (memoTag, filterTag) => {
+          return memoTag === filterTag || memoTag.startsWith(filterTag + '/');
+        };
+
         if (tf.mode === 'include' && tf.tags && tf.tags.length > 0) {
           const filterTags = tf.tags.map(t => t.replace(/^#/, ''));
           if (tf.logic === 'and') {
             filtered = normalized.filter(m => {
               const mTags = Array.isArray(m.tags) ? m.tags : [];
-              return filterTags.every(t => mTags.includes(t));
+              return filterTags.every(ft => mTags.some(mt => tagMatches(mt, ft)));
             });
           } else {
             filtered = normalized.filter(m => {
               const mTags = Array.isArray(m.tags) ? m.tags : [];
-              return filterTags.some(t => mTags.includes(t));
+              return filterTags.some(ft => mTags.some(mt => tagMatches(mt, ft)));
             });
           }
         } else if (tf.mode === 'exclude' && tf.tags && tf.tags.length > 0) {
-          const excludeTags = new Set(tf.tags.map(t => t.replace(/^#/, '')));
+          const excludeTags = tf.tags.map(t => t.replace(/^#/, ''));
           filtered = normalized.filter(m => {
             const mTags = Array.isArray(m.tags) ? m.tags : [];
-            return !mTags.some(t => excludeTags.has(t));
+            return !mTags.some(mt => excludeTags.some(et => tagMatches(mt, et)));
           });
         }
       }
@@ -6028,7 +6036,7 @@
             const allPool = await this.getPoolMemos(settings.timeRange, 1000, null);
             const filteredPool = allPool.filter(m => {
               const mTags = Array.isArray(m.tags) ? m.tags : [];
-              return mTags.includes(parentTag);
+              return mTags.some(t => t === parentTag || t.startsWith(parentTag + '/'));
             });
             const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
             console.log('[DailyReview] SubTag discovery - parent:', parentTag, 'found:', allSubTags.length, 'subtags:', allSubTags.slice(0, 5));
@@ -6110,7 +6118,7 @@
       const allPool = await this.getPoolMemos(settings.timeRange, desiredPoolSize, null);
       const filteredPool = allPool.filter(m => {
         const mTags = Array.isArray(m.tags) ? m.tags : [];
-        return mTags.includes(parentTag) && !mTags.includes(CONFIG.PLAN_MEMO_TAG);
+        return mTags.some(t => t === parentTag || t.startsWith(parentTag + '/')) && !mTags.includes(CONFIG.PLAN_MEMO_TAG);
       });
       const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
       console.log('[DailyReview] ensureActiveSubTag - parent:', parentTag, 'pool:', filteredPool.length, 'subtags found:', allSubTags);
