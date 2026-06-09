@@ -2405,23 +2405,28 @@
     },
 
     async findAllPlanMemos() {
+      // Try server-side filter first (may return 400 on older memos versions)
       const filter = `tag == "${CONFIG.PLAN_MEMO_TAG}"`;
-      // Try NORMAL state first, then ARCHIVED
       let result = await apiService.fetchMemosByFilter(filter, 50);
       let memos = result.memos || [];
       const archivedResult = await apiService.fetchArchivedMemosByFilter(filter, 50);
       memos = memos.concat(archivedResult.memos || []);
-      // Fallback: if both returned empty and filter might not be supported, do client-side
-      if (memos.length === 0) {
-        const allNormal = await apiService.fetchMemosByFilter('', 200);
-        const allArchived = await apiService.fetchArchivedMemosByFilter('', 200);
-        const allMemos = (allNormal.memos || []).concat(allArchived.memos || []);
-        memos = allMemos.filter(m => {
-          const tags = m.property?.tags || m.tags || [];
-          const content = m.content || '';
-          return tags.includes(CONFIG.PLAN_MEMO_TAG) || content.includes(`#${CONFIG.PLAN_MEMO_TAG}`);
-        });
-      }
+
+      // If filter returned results, use them
+      if (memos.length > 0) return memos;
+
+      // Fallback: fetch without filter and check client-side
+      console.log('[DailyReview] Tag filter returned 0 results, using client-side fallback');
+      const allNormal = await apiService.fetchMemosByFilter('', 1000);
+      const allMemos = allNormal.memos || [];
+      // Also try archived
+      const allArchived = await apiService.fetchArchivedMemosByFilter('', 1000);
+      const combined = allMemos.concat(allArchived.memos || []);
+      memos = combined.filter(m => {
+        const content = m.content || '';
+        return content.includes(`#${CONFIG.PLAN_MEMO_TAG}`);
+      });
+      console.log('[DailyReview] Client-side plan memo discovery found:', memos.length);
       return memos;
     },
 
@@ -2443,14 +2448,6 @@
     async createPlanMemo(planData) {
       const content = this.encodeContent(planData);
       const memo = await apiService.createMemo(content, CONFIG.PLAN_MEMO_VISIBILITY);
-      // Try to archive it so it doesn't show in timeline
-      if (memo && memo.name) {
-        try {
-          await apiService.archiveMemo(memo.name);
-        } catch (e) {
-          console.warn('[DailyReview] Could not archive plan memo:', e);
-        }
-      }
       return memo;
     },
 
@@ -5631,14 +5628,15 @@
       });
       console.log('[DailyReview] Pool after excluding plan memos:', filtered.length);
 
-      // For subtag mode, further filter to active subtag
-      if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.type === 'subtag') {
+      // For subtag mode, further filter to active subtag (unless fallback to flat)
+      if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.type === 'subtag' && !planEntry.data._subtagFallbackToFlat) {
         const activeSubTag = coverageService.getActiveSubTag(planEntry);
         if (activeSubTag) {
           filtered = filtered.filter(m => {
             const mTags = Array.isArray(m.tags) ? m.tags : [];
             return mTags.includes(activeSubTag);
           });
+          console.log('[DailyReview] Pool after subtag filter (' + activeSubTag + '):', filtered.length);
         }
       }
 
@@ -6106,6 +6104,8 @@
       if (!parentTag) return;
 
       // Fetch pool without subtag filter to discover all subtags
+      // Clear plan-specific cache to avoid stale data
+      localStorage.removeItem(CONFIG.POOL_KEY);
       const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
       const allPool = await this.getPoolMemos(settings.timeRange, desiredPoolSize, null);
       const filteredPool = allPool.filter(m => {
@@ -6113,8 +6113,15 @@
         return mTags.includes(parentTag) && !mTags.includes(CONFIG.PLAN_MEMO_TAG);
       });
       const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
+      console.log('[DailyReview] ensureActiveSubTag - parent:', parentTag, 'pool:', filteredPool.length, 'subtags found:', allSubTags);
 
-      if (allSubTags.length === 0) return;
+      // If no sub-tags found (no parent/child hierarchy), fall back to flat behavior
+      if (allSubTags.length === 0) {
+        console.log('[DailyReview] No sub-tags found for', parentTag, '- falling back to flat mode behavior');
+        // Temporarily treat as flat: remove subtags field so buildDeckFromPool uses flat coverage
+        planEntry.data._subtagFallbackToFlat = true;
+        return;
+      }
 
       // Check if current subtag review is complete
       const activeSubTag = coverageService.getActiveSubTag(planEntry);
@@ -6126,7 +6133,6 @@
         if (coverageService.isCycleComplete(planEntry, subTagPool)) {
           coverageService.markSubTagDone(planEntry, activeSubTag);
           this.cycleNotification = i18n.t('subtag_complete');
-          // Clear pool cache to force re-fetch with new subtag
           const planId = planEntry.data.plan.id;
           localStorage.removeItem(`${CONFIG.POOL_KEY}-${planId}`);
         }
@@ -6136,7 +6142,6 @@
       if (!planEntry.data.subtags.active) {
         const next = coverageService.selectNextSubTag(planEntry, allSubTags);
         if (!next) {
-          // All done
           this.cycleNotification = i18n.t('all_subtags_done');
         }
       }
