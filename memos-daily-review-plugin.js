@@ -71,7 +71,15 @@
     HISTORY_SOFT_LIMIT: 2500,
     HISTORY_CLEANUP_TARGET: 2000,
     STORAGE_CHECK_INTERVAL_MS: 60000,
-    DECK_SCHEMA_VERSION: 3
+    DECK_SCHEMA_VERSION: 3,
+
+    // Plan system
+    PLAN_MEMO_TAG: '_review_plan',
+    PLAN_SCHEMA_VERSION: 4,
+    PLAN_MEMO_VISIBILITY: 'PRIVATE',
+    PLAN_SYNC_DEBOUNCE_MS: 2000,
+    PLAN_MAX_CONTENT_BYTES: 60000,
+    PLAN_PRUNE_THRESHOLD_BYTES: 50000
   };
 
   // ============================================
@@ -176,7 +184,44 @@
         'click_to_zoom': '点击图片可放大查看',
 
         // Description
-        'single_card_desc': '单张卡片浏览模式，专注于当前内容。可通过左右箭头键或按钮切换。'
+        'single_card_desc': '单张卡片浏览模式，专注于当前内容。可通过左右箭头键或按钮切换。',
+
+        // Plan system
+        'plans': '复习计划',
+        'new_plan': '新建计划',
+        'edit_plan': '编辑计划',
+        'delete_plan': '删除计划',
+        'delete_plan_confirm': '确定要删除这个复习计划吗？所有复习历史将丢失。',
+        'reset_plan': '重置计划',
+        'reset_plan_confirm': '确定要重置此计划的复习进度吗？',
+        'reset_all': '重置全部',
+        'reset_all_confirm': '确定要重置所有计划的复习进度吗？',
+        'plan_name': '计划名称',
+        'plan_type': '计划类型',
+        'plan_type_flat': '平铺模式',
+        'plan_type_subtag': '子标签模式',
+        'tag_filter': '标签过滤',
+        'tag_filter_all': '所有 Memo',
+        'tag_filter_include': '仅包含',
+        'tag_filter_exclude': '排除',
+        'tag_logic_or': '任一匹配',
+        'tag_logic_and': '全部匹配',
+        'tags_input_placeholder': '输入标签名（不含#）',
+        'no_plans': '暂无复习计划',
+        'no_plans_hint': '点击上方按钮创建第一个计划',
+        'no_matching_memos': '没有匹配的 Memo',
+        'cycle_complete': '本轮复习完成！已自动开启新一轮。',
+        'subtag_complete': '子标签复习完成，已跳到下一个。',
+        'all_subtags_done': '所有子标签已复习完成！',
+        'all_subtags_done_hint': '可以重置计划开始新一轮',
+        'progress': '进度',
+        'cycle': '轮次',
+        'sync_ok': '已同步',
+        'sync_pending': '同步中...',
+        'sync_error': '同步失败',
+        'plan_corrupted': '计划数据损坏，请重置',
+        'plan_version_newer': '计划数据版本过新，请更新插件',
+        'suggest_subtag_mode': '此标签下 Memo 过多（超过 600），建议使用子标签模式'
       },
 
       'en': {
@@ -234,7 +279,44 @@
         'click_to_zoom': 'Click image to zoom',
 
         // Description
-        'single_card_desc': 'Single card browsing mode. Focus on current content. Use arrow keys or buttons to navigate.'
+        'single_card_desc': 'Single card browsing mode. Focus on current content. Use arrow keys or buttons to navigate.',
+
+        // Plan system
+        'plans': 'Review Plans',
+        'new_plan': 'New Plan',
+        'edit_plan': 'Edit Plan',
+        'delete_plan': 'Delete Plan',
+        'delete_plan_confirm': 'Delete this review plan? All review history will be lost.',
+        'reset_plan': 'Reset Plan',
+        'reset_plan_confirm': 'Reset this plan\'s review progress?',
+        'reset_all': 'Reset All',
+        'reset_all_confirm': 'Reset all plans\' review progress?',
+        'plan_name': 'Plan Name',
+        'plan_type': 'Plan Type',
+        'plan_type_flat': 'Flat Mode',
+        'plan_type_subtag': 'Sub-tag Mode',
+        'tag_filter': 'Tag Filter',
+        'tag_filter_all': 'All Memos',
+        'tag_filter_include': 'Include Only',
+        'tag_filter_exclude': 'Exclude',
+        'tag_logic_or': 'Any Match',
+        'tag_logic_and': 'All Match',
+        'tags_input_placeholder': 'Enter tag name (without #)',
+        'no_plans': 'No review plans yet',
+        'no_plans_hint': 'Click the button above to create your first plan',
+        'no_matching_memos': 'No matching memos',
+        'cycle_complete': 'Cycle complete! A new cycle has started.',
+        'subtag_complete': 'Sub-tag review complete, moved to next.',
+        'all_subtags_done': 'All sub-tags reviewed!',
+        'all_subtags_done_hint': 'Reset the plan to start a new round',
+        'progress': 'Progress',
+        'cycle': 'Cycle',
+        'sync_ok': 'Synced',
+        'sync_pending': 'Syncing...',
+        'sync_error': 'Sync failed',
+        'plan_corrupted': 'Plan data corrupted, please reset',
+        'plan_version_newer': 'Plan data version too new, please update plugin',
+        'suggest_subtag_mode': 'Too many memos (>600) under this tag, consider sub-tag mode'
       }
     },
 
@@ -1852,6 +1934,128 @@
         const text = await response.text().catch(() => '');
         throw new Error(`API error: ${response.status} ${text}`);
       }
+    },
+
+    async createMemo(content, visibility) {
+      if (!networkUtils.isOnline()) {
+        throw new Error('OFFLINE: No network connection');
+      }
+      const body = JSON.stringify({ content, visibility: visibility || 'PRIVATE' });
+      let refreshed = false;
+
+      const doFetch = async () => {
+        const headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authService.getAuthHeaders() };
+        return utils.fetchWithTimeout('/api/v1/memos', { method: 'POST', headers, body, credentials: 'include' }, 8000);
+      };
+
+      let response = await doFetch();
+      if (response.status === 401 && !refreshed) {
+        refreshed = true;
+        await authService.ensureAccessToken();
+        response = await doFetch();
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`API error: ${response.status} ${text}`);
+      }
+      return await response.json();
+    },
+
+    async fetchMemosByFilter(filter, pageSize) {
+      if (!networkUtils.isOnline()) {
+        throw new Error('OFFLINE: No network connection');
+      }
+      const params = new URLSearchParams({
+        pageSize: String(pageSize || 50),
+        state: 'NORMAL'
+      });
+      if (filter) params.append('filter', filter);
+
+      const doFetch = async () => {
+        const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+        return utils.fetchWithTimeout(`/api/v1/memos?${params.toString()}`, { method: 'GET', headers, credentials: 'include' }, 8000);
+      };
+
+      let response = await doFetch();
+      if (response.status === 401) {
+        await authService.ensureAccessToken();
+        response = await doFetch();
+      }
+      if (response.status === 400) {
+        return { memos: [], nextPageToken: '' };
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`API error: ${response.status} ${text}`);
+      }
+      const data = await response.json();
+      return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
+    },
+
+    async fetchArchivedMemosByFilter(filter, pageSize) {
+      if (!networkUtils.isOnline()) {
+        throw new Error('OFFLINE: No network connection');
+      }
+      const params = new URLSearchParams({
+        pageSize: String(pageSize || 50),
+        state: 'ARCHIVED'
+      });
+      if (filter) params.append('filter', filter);
+
+      const doFetch = async () => {
+        const headers = { 'Accept': 'application/json', ...authService.getAuthHeaders() };
+        return utils.fetchWithTimeout(`/api/v1/memos?${params.toString()}`, { method: 'GET', headers, credentials: 'include' }, 8000);
+      };
+
+      let response = await doFetch();
+      if (response.status === 401) {
+        await authService.ensureAccessToken();
+        response = await doFetch();
+      }
+      if (response.status === 400) {
+        return { memos: [], nextPageToken: '' };
+      }
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`API error: ${response.status} ${text}`);
+      }
+      const data = await response.json();
+      return { memos: data.memos || [], nextPageToken: data.nextPageToken || data.next_page_token || '' };
+    },
+
+    async archiveMemo(memoName) {
+      if (!memoName) throw new Error('missing memo name');
+      const urlBase = `/api/v1/${memoName}`;
+      const body = JSON.stringify({ name: memoName, rowStatus: 'ARCHIVED' });
+      const styleToUrl = {
+        camel: `${urlBase}?updateMask.paths=row_status`,
+        snake: `${urlBase}?update_mask.paths=row_status`
+      };
+      const candidates = capabilityService.getUpdateMaskStyles().map((style) => ({ style, url: styleToUrl[style] }));
+      let refreshed = false;
+      let lastError = null;
+
+      for (const candidate of candidates) {
+        const { style, url } = candidate;
+        try {
+          let headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authService.getAuthHeaders() };
+          let response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
+          if (response.status === 401 && !refreshed) {
+            refreshed = true;
+            await authService.ensureAccessToken();
+            headers = { 'Content-Type': 'application/json', 'Accept': 'application/json', ...authService.getAuthHeaders() };
+            response = await utils.fetchWithTimeout(url, { method: 'PATCH', headers, body, credentials: 'include' }, 8000);
+          }
+          if (response.ok) {
+            capabilityService.markUpdateMaskStyle(style);
+            return await response.json();
+          }
+          lastError = new Error(`API error: ${response.status}`);
+        } catch (e) {
+          lastError = e;
+        }
+      }
+      throw lastError || new Error('Failed to archive memo');
     }
   };
 
@@ -2167,6 +2371,462 @@
         return !!this.getAccessToken();
       } catch (e) {
         return !!this.getAccessToken();
+      }
+    }
+  };
+
+  // ============================================
+  // State Service (Plan Memo CRUD)
+  // ============================================
+  const stateService = {
+    CONTENT_PREFIX: `#${CONFIG.PLAN_MEMO_TAG}\n\n\`\`\`json\n`,
+    CONTENT_SUFFIX: '\n```',
+
+    encodeContent(data) {
+      return this.CONTENT_PREFIX + JSON.stringify(data) + this.CONTENT_SUFFIX;
+    },
+
+    decodeContent(content) {
+      if (!content || typeof content !== 'string') return null;
+      const jsonStart = content.indexOf('```json\n');
+      const jsonEnd = content.lastIndexOf('\n```');
+      if (jsonStart === -1 || jsonEnd === -1) return null;
+      const jsonStr = content.substring(jsonStart + 8, jsonEnd);
+      try {
+        return JSON.parse(jsonStr);
+      } catch (e) {
+        console.error('[DailyReview] Failed to parse plan memo JSON:', e);
+        return null;
+      }
+    },
+
+    getContentByteSize(data) {
+      return new TextEncoder().encode(this.encodeContent(data)).length;
+    },
+
+    async findAllPlanMemos() {
+      const filter = `tag == "${CONFIG.PLAN_MEMO_TAG}"`;
+      // Try NORMAL state first, then ARCHIVED
+      let result = await apiService.fetchMemosByFilter(filter, 50);
+      let memos = result.memos || [];
+      const archivedResult = await apiService.fetchArchivedMemosByFilter(filter, 50);
+      memos = memos.concat(archivedResult.memos || []);
+      // Fallback: if both returned empty and filter might not be supported, do client-side
+      if (memos.length === 0) {
+        const allNormal = await apiService.fetchMemosByFilter('', 200);
+        const allArchived = await apiService.fetchArchivedMemosByFilter('', 200);
+        const allMemos = (allNormal.memos || []).concat(allArchived.memos || []);
+        memos = allMemos.filter(m => {
+          const tags = m.property?.tags || m.tags || [];
+          const content = m.content || '';
+          return tags.includes(CONFIG.PLAN_MEMO_TAG) || content.includes(`#${CONFIG.PLAN_MEMO_TAG}`);
+        });
+      }
+      return memos;
+    },
+
+    async loadAllPlans() {
+      const memos = await this.findAllPlanMemos();
+      const plans = [];
+      for (const memo of memos) {
+        const data = this.decodeContent(memo.content);
+        if (!data || data.schemaVersion > CONFIG.PLAN_SCHEMA_VERSION) continue;
+        plans.push({
+          memoName: memo.name,
+          memoUid: memo.uid || memo.id,
+          data
+        });
+      }
+      return plans;
+    },
+
+    async createPlanMemo(planData) {
+      const content = this.encodeContent(planData);
+      const memo = await apiService.createMemo(content, CONFIG.PLAN_MEMO_VISIBILITY);
+      // Try to archive it so it doesn't show in timeline
+      if (memo && memo.name) {
+        try {
+          await apiService.archiveMemo(memo.name);
+        } catch (e) {
+          console.warn('[DailyReview] Could not archive plan memo:', e);
+        }
+      }
+      return memo;
+    },
+
+    async updatePlanMemo(memoName, planData) {
+      const content = this.encodeContent(planData);
+      return await apiService.updateMemoContent(memoName, content);
+    },
+
+    async deletePlanMemo(memoName) {
+      return await apiService.deleteMemo(memoName);
+    }
+  };
+
+  // ============================================
+  // Sync Service (Debounced writes + merge)
+  // ============================================
+  const syncService = {
+    pending: new Map(),
+    timers: new Map(),
+
+    scheduleSave(memoName, planData) {
+      this.pending.set(memoName, planData);
+      if (this.timers.has(memoName)) {
+        clearTimeout(this.timers.get(memoName));
+      }
+      const timer = setTimeout(() => {
+        this.flush(memoName);
+      }, CONFIG.PLAN_SYNC_DEBOUNCE_MS);
+      this.timers.set(memoName, timer);
+    },
+
+    async flush(memoName) {
+      this.timers.delete(memoName);
+      const data = this.pending.get(memoName);
+      if (!data) return;
+      this.pending.delete(memoName);
+
+      try {
+        // Prune if needed before saving
+        const byteSize = stateService.getContentByteSize(data);
+        if (byteSize > CONFIG.PLAN_PRUNE_THRESHOLD_BYTES) {
+          this.pruneHistory(data);
+        }
+        await stateService.updatePlanMemo(memoName, data);
+      } catch (e) {
+        console.error('[DailyReview] Failed to sync plan memo:', e);
+        // Re-queue for retry
+        this.pending.set(memoName, data);
+      }
+    },
+
+    async flushAll() {
+      const entries = [...this.pending.entries()];
+      for (const [memoName] of entries) {
+        await this.flush(memoName);
+      }
+    },
+
+    pruneHistory(data) {
+      if (!data || !data.history || !data.history.items) return;
+      const items = data.history.items;
+      const currentCycle = data.history.coverage ? data.history.coverage.cycle : 1;
+      const ids = Object.keys(items);
+      // Remove items from cycles older than current-1
+      for (const id of ids) {
+        const entry = items[id];
+        if (entry && typeof entry.cycle === 'number' && entry.cycle < currentCycle - 1) {
+          delete items[id];
+        }
+      }
+    }
+  };
+
+  // ============================================
+  // Plan Service (Multi-plan management)
+  // ============================================
+  const planService = {
+    plans: [],
+    activePlanIndex: 0,
+    loaded: false,
+
+    async loadPlans() {
+      try {
+        const planEntries = await stateService.loadAllPlans();
+        this.plans = planEntries;
+        this.loaded = true;
+        // Restore active plan index from localStorage
+        const savedActive = localStorage.getItem('memos-daily-review-active-plan');
+        if (savedActive) {
+          const idx = this.plans.findIndex(p => p.data && p.data.plan && p.data.plan.id === savedActive);
+          if (idx >= 0) this.activePlanIndex = idx;
+        }
+      } catch (e) {
+        console.error('[DailyReview] Failed to load plans:', e);
+        this.plans = [];
+      }
+      return this.plans;
+    },
+
+    getActivePlan() {
+      if (this.plans.length === 0) return null;
+      if (this.activePlanIndex >= this.plans.length) this.activePlanIndex = 0;
+      return this.plans[this.activePlanIndex];
+    },
+
+    setActivePlan(planId) {
+      const idx = this.plans.findIndex(p => p.data && p.data.plan && p.data.plan.id === planId);
+      if (idx >= 0) {
+        this.activePlanIndex = idx;
+        localStorage.setItem('memos-daily-review-active-plan', planId);
+      }
+    },
+
+    async createPlan(planConfig) {
+      const id = `plan_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+      const data = {
+        schemaVersion: CONFIG.PLAN_SCHEMA_VERSION,
+        plan: {
+          id,
+          name: planConfig.name || 'New Plan',
+          type: planConfig.type || 'flat',
+          tagFilter: planConfig.tagFilter || { mode: 'all', logic: 'or', tags: [] },
+          dailyCount: planConfig.dailyCount || CONFIG.DEFAULT_COUNT,
+          timeRange: planConfig.timeRange || CONFIG.DEFAULT_TIME_RANGE,
+          enabled: true
+        },
+        history: {
+          items: {},
+          coverage: {
+            cycle: 1,
+            totalInScope: 0,
+            reviewedThisCycle: 0,
+            cycleStartedAt: new Date().toISOString()
+          }
+        }
+      };
+      // Add subtags field for subtag type
+      if (data.plan.type === 'subtag') {
+        data.subtags = { active: '', done: [], order: 'alpha' };
+      }
+      const memo = await stateService.createPlanMemo(data);
+      const entry = { memoName: memo.name, memoUid: memo.uid || memo.id, data };
+      this.plans.push(entry);
+      this.activePlanIndex = this.plans.length - 1;
+      localStorage.setItem('memos-daily-review-active-plan', id);
+      return entry;
+    },
+
+    async updatePlan(planId, updates) {
+      const entry = this.plans.find(p => p.data && p.data.plan && p.data.plan.id === planId);
+      if (!entry) return;
+      Object.assign(entry.data.plan, updates);
+      syncService.scheduleSave(entry.memoName, entry.data);
+    },
+
+    async deletePlan(planId) {
+      const idx = this.plans.findIndex(p => p.data && p.data.plan && p.data.plan.id === planId);
+      if (idx < 0) return;
+      const entry = this.plans[idx];
+      await stateService.deletePlanMemo(entry.memoName);
+      this.plans.splice(idx, 1);
+      if (this.activePlanIndex >= this.plans.length) {
+        this.activePlanIndex = Math.max(0, this.plans.length - 1);
+      }
+    },
+
+    async resetPlan(planId) {
+      const entry = this.plans.find(p => p.data && p.data.plan && p.data.plan.id === planId);
+      if (!entry) return;
+      entry.data.history = {
+        items: {},
+        coverage: { cycle: 1, totalInScope: 0, reviewedThisCycle: 0, cycleStartedAt: new Date().toISOString() }
+      };
+      if (entry.data.subtags) {
+        entry.data.subtags = { active: '', done: [], order: 'alpha' };
+      }
+      syncService.scheduleSave(entry.memoName, entry.data);
+    },
+
+    async resetAll() {
+      for (const entry of this.plans) {
+        entry.data.history = {
+          items: {},
+          coverage: { cycle: 1, totalInScope: 0, reviewedThisCycle: 0, cycleStartedAt: new Date().toISOString() }
+        };
+        if (entry.data.subtags) {
+          entry.data.subtags = { active: '', done: [], order: 'alpha' };
+        }
+        syncService.scheduleSave(entry.memoName, entry.data);
+      }
+    },
+
+    getHistory(planEntry) {
+      if (!planEntry || !planEntry.data) return { items: {}, coverage: { cycle: 1, totalInScope: 0, reviewedThisCycle: 0 } };
+      return planEntry.data.history || { items: {}, coverage: { cycle: 1, totalInScope: 0, reviewedThisCycle: 0 } };
+    },
+
+    markViewed(planEntry, memoId, today) {
+      if (!planEntry || !planEntry.data || !memoId) return;
+      const history = planEntry.data.history;
+      if (!history.items) history.items = {};
+      const currentCycle = history.coverage ? history.coverage.cycle : 1;
+      const entry = history.items[memoId] || { lastShownDay: null, shownCount: 0, cycle: 0 };
+      // Increment coverage only if first view in this cycle
+      if (entry.cycle < currentCycle && history.coverage) {
+        history.coverage.reviewedThisCycle = (history.coverage.reviewedThisCycle || 0) + 1;
+      }
+      entry.lastShownDay = today;
+      entry.shownCount = (entry.shownCount || 0) + 1;
+      entry.cycle = currentCycle;
+      history.items[memoId] = entry;
+      syncService.scheduleSave(planEntry.memoName, planEntry.data);
+    }
+  };
+
+  // ============================================
+  // Coverage Service
+  // ============================================
+  const coverageService = {
+    updateTotalInScope(planEntry, poolSize) {
+      if (!planEntry || !planEntry.data || !planEntry.data.history) return;
+      planEntry.data.history.coverage.totalInScope = poolSize;
+    },
+
+    cleanOrphans(planEntry, poolMemoIds) {
+      if (!planEntry || !planEntry.data || !planEntry.data.history) return;
+      const items = planEntry.data.history.items;
+      const validIds = new Set(poolMemoIds);
+      let removedCount = 0;
+      for (const id of Object.keys(items)) {
+        if (!validIds.has(id)) {
+          delete items[id];
+          removedCount++;
+        }
+      }
+      if (removedCount > 0) {
+        // Recalculate reviewedThisCycle
+        const currentCycle = planEntry.data.history.coverage.cycle;
+        let reviewed = 0;
+        for (const entry of Object.values(items)) {
+          if (entry && entry.cycle >= currentCycle) reviewed++;
+        }
+        planEntry.data.history.coverage.reviewedThisCycle = reviewed;
+      }
+    },
+
+    isCycleComplete(planEntry, pool) {
+      if (!planEntry || !planEntry.data || !planEntry.data.history) return false;
+      if (!pool || pool.length === 0) return false;
+      const currentCycle = planEntry.data.history.coverage.cycle;
+      const items = planEntry.data.history.items;
+      for (const memo of pool) {
+        const id = memo.id || memo.name;
+        const entry = items[id];
+        if (!entry || entry.cycle < currentCycle) return false;
+      }
+      return true;
+    },
+
+    advanceCycle(planEntry) {
+      if (!planEntry || !planEntry.data || !planEntry.data.history) return;
+      const coverage = planEntry.data.history.coverage;
+      coverage.cycle = (coverage.cycle || 1) + 1;
+      coverage.reviewedThisCycle = 0;
+      coverage.cycleStartedAt = new Date().toISOString();
+      syncService.scheduleSave(planEntry.memoName, planEntry.data);
+    },
+
+    getProgress(planEntry) {
+      if (!planEntry || !planEntry.data || !planEntry.data.history || !planEntry.data.history.coverage) {
+        return { reviewed: 0, total: 0, cycle: 1 };
+      }
+      const c = planEntry.data.history.coverage;
+      return { reviewed: c.reviewedThisCycle || 0, total: c.totalInScope || 0, cycle: c.cycle || 1 };
+    },
+
+    // Sub-tag mode helpers
+    getActiveSubTag(planEntry) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return null;
+      return planEntry.data.subtags.active || null;
+    },
+
+    discoverSubTags(pool, parentTag) {
+      const subTags = new Set();
+      const prefix = parentTag + '/';
+      for (const memo of pool) {
+        const tags = Array.isArray(memo.tags) ? memo.tags : [];
+        for (const tag of tags) {
+          if (tag.startsWith(prefix)) {
+            subTags.add(tag);
+          }
+        }
+      }
+      return [...subTags].sort();
+    },
+
+    selectNextSubTag(planEntry, allSubTags) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return null;
+      const done = new Set(planEntry.data.subtags.done || []);
+      for (const tag of allSubTags) {
+        if (!done.has(tag)) {
+          planEntry.data.subtags.active = tag;
+          syncService.scheduleSave(planEntry.memoName, planEntry.data);
+          return tag;
+        }
+      }
+      return null;
+    },
+
+    markSubTagDone(planEntry, subTag) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return;
+      if (!planEntry.data.subtags.done) planEntry.data.subtags.done = [];
+      if (!planEntry.data.subtags.done.includes(subTag)) {
+        planEntry.data.subtags.done.push(subTag);
+      }
+      // Clear history items to save space
+      planEntry.data.history.items = {};
+      planEntry.data.history.coverage.reviewedThisCycle = 0;
+      planEntry.data.subtags.active = '';
+      syncService.scheduleSave(planEntry.memoName, planEntry.data);
+    },
+
+    isAllSubTagsDone(planEntry, allSubTags) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return false;
+      const done = new Set(planEntry.data.subtags.done || []);
+      return allSubTags.every(tag => done.has(tag));
+    },
+
+    getSubTagProgress(planEntry, allSubTags) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return { done: 0, total: 0 };
+      const doneCount = (planEntry.data.subtags.done || []).length;
+      return { done: doneCount, total: allSubTags.length };
+    }
+  };
+
+  // ============================================
+  // Migration Service (localStorage → plan memos)
+  // ============================================
+  const migrationService = {
+    shouldMigrate() {
+      if (localStorage.getItem('_review_migrated')) return false;
+      return !!localStorage.getItem(CONFIG.HISTORY_KEY) || !!localStorage.getItem(CONFIG.STORAGE_KEY);
+    },
+
+    async migrate() {
+      try {
+        const oldSettings = settingsService.load();
+        const oldHistory = historyService.load();
+        const planConfig = {
+          name: i18n.t('daily_review'),
+          type: 'flat',
+          tagFilter: { mode: 'all', logic: 'or', tags: [] },
+          dailyCount: oldSettings.count,
+          timeRange: oldSettings.timeRange
+        };
+        const entry = await planService.createPlan(planConfig);
+        // Migrate history items (limit to 500 to stay under content size)
+        const ids = Object.keys(oldHistory.items || {});
+        const sorted = ids
+          .map(id => ({ id, entry: oldHistory.items[id] }))
+          .sort((a, b) => (b.entry.lastShownDay || '').localeCompare(a.entry.lastShownDay || ''))
+          .slice(0, 500);
+        for (const { id, entry: histEntry } of sorted) {
+          entry.data.history.items[id] = {
+            lastShownDay: histEntry.lastShownDay,
+            shownCount: histEntry.shownCount,
+            cycle: 1
+          };
+        }
+        entry.data.history.coverage.reviewedThisCycle = sorted.length;
+        await stateService.updatePlanMemo(entry.memoName, entry.data);
+        localStorage.setItem('_review_migrated', JSON.stringify({ migratedAt: new Date().toISOString() }));
+        return true;
+      } catch (e) {
+        console.error('[DailyReview] Migration failed:', e);
+        return false;
       }
     }
   };
@@ -3120,6 +3780,60 @@
         .daily-review-btn-primary:hover {
           opacity: 0.9;
         }
+        .daily-review-btn-sm {
+          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 4px;
+          cursor: pointer;
+          border: 1px solid var(--border, #e5e7eb);
+          background: var(--background, #fff);
+          color: var(--foreground, #1f2937);
+        }
+        .daily-review-btn-sm:hover {
+          background: var(--accent, #f3f4f6);
+        }
+        .daily-review-btn-danger {
+          color: var(--destructive, #ef4444);
+          border-color: var(--destructive, #ef4444);
+        }
+        .daily-review-btn-danger:hover {
+          background: rgba(239, 68, 68, 0.1);
+        }
+        .daily-review-plan-item {
+          display: flex;
+          align-items: center;
+          padding: 8px;
+          margin: 4px 0;
+          border-radius: var(--radius, 6px);
+          border: 1px solid var(--border, #e5e7eb);
+          gap: 8px;
+        }
+        .daily-review-plan-item:hover {
+          background: var(--accent, #f3f4f6);
+        }
+        .daily-review-progress-bar {
+          position: relative;
+          height: 20px;
+          background: var(--accent, #f3f4f6);
+          margin: 0 16px;
+          border-radius: 4px;
+          overflow: hidden;
+        }
+        .daily-review-progress-fill {
+          height: 100%;
+          background: var(--primary, #4f46e5);
+          opacity: 0.2;
+          transition: width 0.3s ease;
+        }
+        .daily-review-progress-text {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 11px;
+          color: var(--foreground, #1f2937);
+        }
 
         /* Mobile responsive styles */
         @media (max-width: 640px) {
@@ -3242,7 +3956,10 @@
       dialog.innerHTML = `
         <h2 id="daily-review-dialog-title" class="sr-only">${i18n.t('daily_review')}</h2>
         <div class="daily-review-header">
-          <h2 class="daily-review-title" aria-hidden="true">${i18n.t('daily_review')}</h2>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <h2 class="daily-review-title" aria-hidden="true">${i18n.t('daily_review')}</h2>
+            <select class="daily-review-select daily-review-plan-selector" id="daily-review-plan-selector" style="font-size:12px;padding:2px 6px;max-width:140px;"></select>
+          </div>
           <button class="daily-review-close" id="daily-review-header-close" title="${i18n.t('close')}" aria-label="${i18n.t('close')}">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -3253,6 +3970,10 @@
         <div class="daily-review-tabs">
           <button class="daily-review-tab active" data-tab="review">${i18n.t('review_tab')}</button>
           <button class="daily-review-tab" data-tab="settings">${i18n.t('settings_tab')}</button>
+        </div>
+        <div class="daily-review-progress-bar" id="daily-review-progress-bar" style="display:none;">
+          <div class="daily-review-progress-fill" id="daily-review-progress-fill"></div>
+          <span class="daily-review-progress-text" id="daily-review-progress-text"></span>
         </div>
         <div class="daily-review-body">
           <div class="daily-review-panel" id="${this.panelReviewId}">
@@ -3304,29 +4025,22 @@
             </div>
           </div>
           <div class="daily-review-panel hidden" id="${this.panelSettingsId}">
-            <div class="daily-review-settings">
-              <div class="daily-review-setting-group">
-                <label class="daily-review-setting-label">${i18n.t('time_range')}</label>
-                <select class="daily-review-select" id="daily-review-time-range">
-                  ${CONFIG.TIME_RANGES.map(t => `<option value="${t.value}">${i18n.t('time_' + t.value)}</option>`).join('')}
-                </select>
+            <div class="daily-review-settings" id="daily-review-plan-settings">
+              <div class="daily-review-setting-group" style="display:flex;justify-content:space-between;align-items:center;">
+                <label class="daily-review-setting-label" style="font-weight:600;">${i18n.t('plans')}</label>
+                <button class="daily-review-btn daily-review-btn-sm" id="daily-review-new-plan-btn">${i18n.t('new_plan')}</button>
               </div>
-              <div class="daily-review-setting-group">
-                <label class="daily-review-setting-label">${i18n.t('daily_count')}</label>
-                <select class="daily-review-select" id="daily-review-count">
-                  ${CONFIG.COUNT_OPTIONS.map(c => `<option value="${c}">${c}${i18n.t('count_unit')}</option>`).join('')}
-                </select>
+              <div id="daily-review-plan-list"></div>
+              <div class="daily-review-setting-group" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border, #e5e7eb);">
+                <button class="daily-review-btn daily-review-btn-sm daily-review-btn-danger" id="daily-review-reset-all-btn">${i18n.t('reset_all')}</button>
               </div>
-              <div class="daily-review-setting-group">
+              <div class="daily-review-setting-group" style="margin-top:8px;">
                 <label class="daily-review-setting-label">${i18n.t('language')}</label>
                 <select class="daily-review-select daily-review-language-select">
                   <option value="zh-CN" ${i18n.currentLanguage === 'zh-CN' ? 'selected' : ''}>${i18n.t('chinese')}</option>
                   <option value="en" ${i18n.currentLanguage === 'en' ? 'selected' : ''}>${i18n.t('english')}</option>
                 </select>
               </div>
-            </div>
-            <div class="daily-review-settings-hint">
-              ${i18n.t('single_card_desc')}
             </div>
           </div>
         </div>
@@ -3358,18 +4072,60 @@
         cleanupService.register('dialog', tab, 'click', () => this.switchTab(tab.dataset.tab));
       });
 
-      cleanupService.register('dialog', dialog.querySelector('#daily-review-time-range'), 'change', (e) => {
-        const settings = settingsService.load();
-        settings.timeRange = e.target.value;
-        settingsService.save(settings);
-        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
-      });
-      cleanupService.register('dialog', dialog.querySelector('#daily-review-count'), 'change', (e) => {
-        const settings = settingsService.load();
-        settings.count = parseInt(e.target.value, 10);
-        settingsService.save(settings);
-        controller.onSettingsChanged().catch(err => console.error('Settings change failed:', err));
-      });
+      // Plan selector
+      const planSelector = dialog.querySelector('#daily-review-plan-selector');
+      if (planSelector) {
+        cleanupService.register('dialog', planSelector, 'change', (e) => {
+          controller.switchPlan(e.target.value).catch(err => console.error('Plan switch failed:', err));
+        });
+      }
+
+      // New plan button
+      const newPlanBtn = dialog.querySelector('#daily-review-new-plan-btn');
+      if (newPlanBtn) {
+        cleanupService.register('dialog', newPlanBtn, 'click', () => this.showNewPlanDialog());
+      }
+
+      // Reset all button
+      const resetAllBtn = dialog.querySelector('#daily-review-reset-all-btn');
+      if (resetAllBtn) {
+        cleanupService.register('dialog', resetAllBtn, 'click', async () => {
+          if (!confirm(i18n.t('reset_all_confirm'))) return;
+          await planService.resetAll();
+          this.renderPlanList();
+          this.updateProgressBar();
+          controller.onSettingsChanged().catch(err => console.error('Reset failed:', err));
+        });
+      }
+
+      // Plan list event delegation (reset/delete buttons)
+      const planList = dialog.querySelector('#daily-review-plan-list');
+      if (planList) {
+        cleanupService.register('dialog', planList, 'click', async (e) => {
+          const resetBtn = e.target.closest('.daily-review-plan-reset-btn');
+          const deleteBtn = e.target.closest('.daily-review-plan-delete-btn');
+          if (resetBtn) {
+            const planId = resetBtn.dataset.planId;
+            if (!confirm(i18n.t('reset_plan_confirm'))) return;
+            await planService.resetPlan(planId);
+            this.renderPlanList();
+            this.updateProgressBar();
+            controller.onSettingsChanged().catch(err => console.error('Reset failed:', err));
+          } else if (deleteBtn) {
+            const planId = deleteBtn.dataset.planId;
+            if (!confirm(i18n.t('delete_plan_confirm'))) return;
+            await planService.deletePlan(planId);
+            this.renderPlanList();
+            this.updatePlanSelector();
+            this.updateProgressBar();
+            if (planService.plans.length === 0) {
+              ui.setReviewState('empty', i18n.t('no_plans'), i18n.t('no_plans_hint'));
+            } else {
+              controller.onSettingsChanged().catch(err => console.error('Delete failed:', err));
+            }
+          }
+        });
+      }
 
       // Language selector
       const languageSelect = dialog.querySelector('.daily-review-language-select');
@@ -3621,7 +4377,7 @@
       }
     },
 
-    setReviewState(type, message) {
+    setReviewState(type, message, hint) {
       const state = document.getElementById(this.stateId);
       const deck = document.getElementById(this.deckId);
       if (!state || !deck) return;
@@ -3641,16 +4397,224 @@
           <div>${i18n.t('loading')}</div>
         `;
       } else if (type === 'empty') {
+        const title = message || i18n.t('empty_state');
+        const hintText = hint || i18n.t('empty_hint');
         state.innerHTML = `
           <div class="daily-review-empty">
             <div class="daily-review-empty-icon">📝</div>
-            <div class="daily-review-empty-title">${i18n.t('empty_state')}</div>
-            <div class="daily-review-empty-hint">${i18n.t('empty_hint')}</div>
+            <div class="daily-review-empty-title">${utils.escapeHtml(title)}</div>
+            <div class="daily-review-empty-hint">${utils.escapeHtml(hintText)}</div>
           </div>
         `;
       } else if (type === 'error') {
         state.innerHTML = `<div>${utils.escapeHtml(message || i18n.t('load_failed'))}</div>`;
       }
+    },
+
+    showNotification(message) {
+      if (!message) return;
+      const dialog = document.getElementById(this.dialogId);
+      if (!dialog) return;
+      const existing = dialog.querySelector('.daily-review-notification');
+      if (existing) existing.remove();
+      const el = document.createElement('div');
+      el.className = 'daily-review-notification';
+      el.textContent = message;
+      el.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);background:var(--primary, #4f46e5);color:var(--primary-foreground, #fff);padding:8px 16px;border-radius:var(--radius, 8px);font-size:13px;z-index:100;animation:daily-review-fade-in 0.3s ease-out;';
+      dialog.appendChild(el);
+      setTimeout(() => { if (el.parentNode) el.remove(); }, 4000);
+    },
+
+    updatePlanSelector() {
+      const selector = document.getElementById('daily-review-plan-selector');
+      if (!selector) return;
+      const plans = planService.plans;
+      if (plans.length === 0) {
+        selector.style.display = 'none';
+        return;
+      }
+      selector.style.display = '';
+      const activePlan = planService.getActivePlan();
+      const activeId = activePlan && activePlan.data && activePlan.data.plan ? activePlan.data.plan.id : '';
+      selector.innerHTML = plans.map(p => {
+        const plan = p.data && p.data.plan ? p.data.plan : {};
+        const selected = plan.id === activeId ? ' selected' : '';
+        return `<option value="${plan.id || ''}"${selected}>${utils.escapeHtml(plan.name || 'Unnamed')}</option>`;
+      }).join('');
+    },
+
+    updateProgressBar() {
+      const bar = document.getElementById('daily-review-progress-bar');
+      const fill = document.getElementById('daily-review-progress-fill');
+      const text = document.getElementById('daily-review-progress-text');
+      if (!bar || !fill || !text) return;
+
+      const activePlan = planService.getActivePlan();
+      if (!activePlan) {
+        bar.style.display = 'none';
+        return;
+      }
+
+      const progress = coverageService.getProgress(activePlan);
+      if (progress.total === 0) {
+        bar.style.display = 'none';
+        return;
+      }
+
+      bar.style.display = '';
+      const pct = Math.min(100, Math.round((progress.reviewed / progress.total) * 100));
+      fill.style.width = `${pct}%`;
+
+      // For subtag mode, show subtag progress too
+      if (activePlan.data && activePlan.data.plan && activePlan.data.plan.type === 'subtag' && activePlan.data.subtags) {
+        const activeSubTag = activePlan.data.subtags.active || '';
+        const doneCount = (activePlan.data.subtags.done || []).length;
+        const shortTag = activeSubTag.split('/').pop() || '';
+        text.textContent = `${shortTag} [${progress.reviewed}/${progress.total}] (${doneCount} sub-tags done)`;
+      } else {
+        text.textContent = `${progress.reviewed}/${progress.total} (${i18n.t('cycle')} ${progress.cycle})`;
+      }
+    },
+
+    renderPlanList() {
+      const container = document.getElementById('daily-review-plan-list');
+      if (!container) return;
+      const plans = planService.plans;
+      if (plans.length === 0) {
+        container.innerHTML = `<div style="text-align:center;color:var(--muted-foreground, #6b7280);padding:16px;font-size:13px;">${i18n.t('no_plans')}<br><small>${i18n.t('no_plans_hint')}</small></div>`;
+        return;
+      }
+      container.innerHTML = plans.map(p => {
+        const plan = p.data && p.data.plan ? p.data.plan : {};
+        const tf = plan.tagFilter || {};
+        let tagDesc = i18n.t('tag_filter_all');
+        if (tf.mode === 'include' && tf.tags && tf.tags.length > 0) {
+          tagDesc = `${i18n.t('tag_filter_include')}: #${tf.tags.join(', #')} (${tf.logic === 'and' ? i18n.t('tag_logic_and') : i18n.t('tag_logic_or')})`;
+        } else if (tf.mode === 'exclude' && tf.tags && tf.tags.length > 0) {
+          tagDesc = `${i18n.t('tag_filter_exclude')}: #${tf.tags.join(', #')}`;
+        }
+        const typeLabel = plan.type === 'subtag' ? i18n.t('plan_type_subtag') : i18n.t('plan_type_flat');
+        const progress = coverageService.getProgress(p);
+        const progressText = progress.total > 0 ? ` — ${progress.reviewed}/${progress.total}` : '';
+        return `
+          <div class="daily-review-plan-item" data-plan-id="${plan.id || ''}">
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:500;font-size:13px;">${utils.escapeHtml(plan.name || 'Unnamed')}</div>
+              <div style="font-size:11px;color:var(--muted-foreground, #6b7280);margin-top:2px;">
+                ${typeLabel} · ${plan.dailyCount || 8}${i18n.t('count_unit')} · ${utils.escapeHtml(tagDesc)}${progressText}
+              </div>
+            </div>
+            <div style="display:flex;gap:4px;">
+              <button class="daily-review-icon-btn daily-review-plan-reset-btn" data-plan-id="${plan.id || ''}" title="${i18n.t('reset_plan')}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+              </button>
+              <button class="daily-review-icon-btn daily-review-plan-delete-btn" data-plan-id="${plan.id || ''}" title="${i18n.t('delete_plan')}" style="color:var(--destructive, #ef4444);">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+              </button>
+            </div>
+          </div>`;
+      }).join('');
+    },
+
+    showNewPlanDialog() {
+      const dialog = document.getElementById(this.dialogId);
+      if (!dialog) return;
+      const existing = dialog.querySelector('.daily-review-new-plan-overlay');
+      if (existing) existing.remove();
+
+      const overlay = document.createElement('div');
+      overlay.className = 'daily-review-new-plan-overlay';
+      overlay.style.cssText = 'position:absolute;inset:0;background:var(--background, #fff);z-index:50;padding:16px;overflow-y:auto;border-radius:var(--radius, 12px);';
+      overlay.innerHTML = `
+        <h3 style="margin:0 0 12px;font-size:15px;">${i18n.t('new_plan')}</h3>
+        <div class="daily-review-setting-group">
+          <label class="daily-review-setting-label">${i18n.t('plan_name')}</label>
+          <input type="text" id="new-plan-name" class="daily-review-select" style="width:100%;" placeholder="My Review Plan">
+        </div>
+        <div class="daily-review-setting-group">
+          <label class="daily-review-setting-label">${i18n.t('plan_type')}</label>
+          <select id="new-plan-type" class="daily-review-select">
+            <option value="flat">${i18n.t('plan_type_flat')}</option>
+            <option value="subtag">${i18n.t('plan_type_subtag')}</option>
+          </select>
+        </div>
+        <div class="daily-review-setting-group">
+          <label class="daily-review-setting-label">${i18n.t('tag_filter')}</label>
+          <select id="new-plan-filter-mode" class="daily-review-select">
+            <option value="all">${i18n.t('tag_filter_all')}</option>
+            <option value="include">${i18n.t('tag_filter_include')}</option>
+            <option value="exclude">${i18n.t('tag_filter_exclude')}</option>
+          </select>
+        </div>
+        <div class="daily-review-setting-group" id="new-plan-logic-group" style="display:none;">
+          <label class="daily-review-setting-label">Logic</label>
+          <select id="new-plan-filter-logic" class="daily-review-select">
+            <option value="or">${i18n.t('tag_logic_or')}</option>
+            <option value="and">${i18n.t('tag_logic_and')}</option>
+          </select>
+        </div>
+        <div class="daily-review-setting-group" id="new-plan-tags-group" style="display:none;">
+          <label class="daily-review-setting-label">Tags</label>
+          <input type="text" id="new-plan-tags" class="daily-review-select" style="width:100%;" placeholder="${i18n.t('tags_input_placeholder')}">
+          <small style="color:var(--muted-foreground, #6b7280);font-size:11px;">Comma separated, e.g. english, vocabulary</small>
+        </div>
+        <div class="daily-review-setting-group">
+          <label class="daily-review-setting-label">${i18n.t('daily_count')}</label>
+          <select id="new-plan-count" class="daily-review-select">
+            ${CONFIG.COUNT_OPTIONS.map(c => `<option value="${c}">${c}${i18n.t('count_unit')}</option>`).join('')}
+          </select>
+        </div>
+        <div class="daily-review-setting-group">
+          <label class="daily-review-setting-label">${i18n.t('time_range')}</label>
+          <select id="new-plan-time-range" class="daily-review-select">
+            ${CONFIG.TIME_RANGES.map(t => `<option value="${t.value}">${i18n.t('time_' + t.value)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button class="daily-review-btn daily-review-btn-primary" id="new-plan-save-btn">${i18n.t('save')}</button>
+          <button class="daily-review-btn" id="new-plan-cancel-btn">${i18n.t('cancel')}</button>
+        </div>
+      `;
+      dialog.appendChild(overlay);
+
+      // Show/hide tags input based on mode
+      const modeSelect = overlay.querySelector('#new-plan-filter-mode');
+      const tagsGroup = overlay.querySelector('#new-plan-tags-group');
+      const logicGroup = overlay.querySelector('#new-plan-logic-group');
+      modeSelect.addEventListener('change', () => {
+        const show = modeSelect.value !== 'all';
+        tagsGroup.style.display = show ? '' : 'none';
+        logicGroup.style.display = modeSelect.value === 'include' ? '' : 'none';
+      });
+
+      // Cancel
+      overlay.querySelector('#new-plan-cancel-btn').addEventListener('click', () => overlay.remove());
+
+      // Save
+      overlay.querySelector('#new-plan-save-btn').addEventListener('click', async () => {
+        const name = overlay.querySelector('#new-plan-name').value.trim() || 'New Plan';
+        const type = overlay.querySelector('#new-plan-type').value;
+        const mode = overlay.querySelector('#new-plan-filter-mode').value;
+        const logic = overlay.querySelector('#new-plan-filter-logic').value;
+        const tagsRaw = overlay.querySelector('#new-plan-tags').value;
+        const tags = tagsRaw.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean);
+        const dailyCount = parseInt(overlay.querySelector('#new-plan-count').value) || 8;
+        const timeRange = overlay.querySelector('#new-plan-time-range').value;
+
+        try {
+          await planService.createPlan({
+            name, type, dailyCount, timeRange,
+            tagFilter: { mode, logic: mode === 'include' ? logic : 'or', tags }
+          });
+          overlay.remove();
+          this.renderPlanList();
+          this.updatePlanSelector();
+          controller.onSettingsChanged();
+        } catch (e) {
+          console.error('Failed to create plan:', e);
+          alert('Failed to create plan: ' + (e.message || e));
+        }
+      });
     },
 
     renderDeck(deckMemos, index) {
@@ -3909,6 +4873,8 @@
     loadingTimer: null,
     animationInProgress: false,
     lastFocusedElement: null,
+    plansLoaded: false,
+    cycleNotification: null,
 
     init() {
       try {
@@ -3950,6 +4916,7 @@
         // Clean up storage monitor on page unload
         cleanupService.register('global', window, 'beforeunload', () => {
           storageMonitor.stop();
+          syncService.flushAll();
         });
 
         this.bindKeyboardShortcuts();
@@ -4098,17 +5065,38 @@
       this.lastFocusedElement = currentFocus && typeof currentFocus.focus === 'function' ? currentFocus : null;
 
       this.isOpen = true;
-      // Rebind keyboard shortcuts when opening dialog
       this.bindKeyboardShortcuts();
 
-      // Load batch state from localStorage (persists across dialog open/close)
       this.deckBatch = batchService.load();
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
       ui.showDialog();
+
       try {
+        // Load plans if not yet loaded
+        if (!this.plansLoaded) {
+          ui.setReviewState('loading');
+          // Check for migration
+          if (migrationService.shouldMigrate()) {
+            await migrationService.migrate();
+          }
+          await planService.loadPlans();
+          this.plansLoaded = true;
+        }
+
+        // Update UI elements
+        ui.updatePlanSelector();
+        ui.renderPlanList();
+
+        // If no plans exist, show the plan creation UI
+        if (planService.plans.length === 0) {
+          ui.setReviewState('empty', i18n.t('no_plans'), i18n.t('no_plans_hint'));
+          return;
+        }
+
         await this.loadDeck();
+        ui.updateProgressBar();
       } catch (error) {
         console.error('Failed to open dialog:', error);
         ui.setReviewState('error', i18n.t('load_failed'));
@@ -4162,16 +5150,34 @@
     },
 
     async onSettingsChanged() {
-      // Reset batch to 0 when settings change
       this.deckBatch = 0;
       batchService.save(this.deckBatch);
       this.deckIndex = 0;
       this.deckMemos = [];
       this.viewedInSession = new Set();
+      // Clear pool caches for all plans
+      const keys = Object.keys(localStorage).filter(k => k.startsWith(CONFIG.POOL_KEY));
+      keys.forEach(k => localStorage.removeItem(k));
       try {
         await this.loadDeck(true);
       } catch (error) {
         console.error('Failed to reload deck after settings change:', error);
+        ui.setReviewState('error', i18n.t('load_failed'));
+      }
+    },
+
+    async switchPlan(planId) {
+      planService.setActivePlan(planId);
+      this.deckBatch = 0;
+      batchService.save(0);
+      this.deckIndex = 0;
+      this.deckMemos = [];
+      this.viewedInSession = new Set();
+      deckService.clear();
+      try {
+        await this.loadDeck(true);
+      } catch (error) {
+        console.error('Failed to switch plan:', error);
         ui.setReviewState('error', i18n.t('load_failed'));
       }
     },
@@ -4489,7 +5495,14 @@
       if (!memoId) return;
       if (this.viewedInSession.has(memoId)) return;
       this.viewedInSession.add(memoId);
-      historyService.markViewed(memoId, utils.getDailySeed());
+
+      // Use plan-based tracking if available
+      const activePlan = planService.getActivePlan();
+      if (activePlan) {
+        planService.markViewed(activePlan, memoId, utils.getDailySeed());
+      } else {
+        historyService.markViewed(memoId, utils.getDailySeed());
+      }
     },
 
     estimateDesiredPoolSize(timeRange, dailyCount) {
@@ -4498,13 +5511,27 @@
       return Math.max(count * CONFIG.POOL_TARGET_MULTIPLIER, minTarget);
     },
 
-    async getPoolMemos(timeRange, desiredPoolSize) {
+    async getPoolMemos(timeRange, desiredPoolSize, planEntry) {
       const desiredSize = Number.isFinite(desiredPoolSize) && desiredPoolSize > 0
         ? Math.floor(desiredPoolSize)
         : this.estimateDesiredPoolSize(timeRange, CONFIG.DEFAULT_COUNT);
       const maxPages = timeRange === 'all' ? CONFIG.POOL_MAX_PAGES_ALL : CONFIG.POOL_MAX_PAGES_SCOPED;
-      const cached = poolService.load(timeRange);
-      if (cached && cached.length > 0) return cached;
+
+      // Build a cache key that includes plan filter info
+      const planId = planEntry && planEntry.data && planEntry.data.plan ? planEntry.data.plan.id : '';
+      const poolCacheKey = planId ? `${CONFIG.POOL_KEY}-${planId}` : CONFIG.POOL_KEY;
+
+      // Check cache (using plan-specific key)
+      try {
+        const saved = localStorage.getItem(poolCacheKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed && parsed.timeRange === timeRange && Array.isArray(parsed.memos) &&
+              typeof parsed.timestamp === 'number' && Date.now() - parsed.timestamp <= CONFIG.POOL_TTL_MS) {
+            return parsed.memos;
+          }
+        }
+      } catch (e) { /* ignore */ }
 
       const normalized = [];
       const seen = new Set();
@@ -4567,8 +5594,55 @@
         }
       }
 
-      poolService.save(timeRange, normalized);
-      return normalized;
+      // Apply tag filtering for plan
+      let filtered = normalized;
+      if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.tagFilter) {
+        const tf = planEntry.data.plan.tagFilter;
+        if (tf.mode === 'include' && tf.tags && tf.tags.length > 0) {
+          const filterTags = tf.tags.map(t => t.replace(/^#/, ''));
+          if (tf.logic === 'and') {
+            filtered = normalized.filter(m => {
+              const mTags = Array.isArray(m.tags) ? m.tags : [];
+              return filterTags.every(t => mTags.includes(t));
+            });
+          } else {
+            filtered = normalized.filter(m => {
+              const mTags = Array.isArray(m.tags) ? m.tags : [];
+              return filterTags.some(t => mTags.includes(t));
+            });
+          }
+        } else if (tf.mode === 'exclude' && tf.tags && tf.tags.length > 0) {
+          const excludeTags = new Set(tf.tags.map(t => t.replace(/^#/, '')));
+          filtered = normalized.filter(m => {
+            const mTags = Array.isArray(m.tags) ? m.tags : [];
+            return !mTags.some(t => excludeTags.has(t));
+          });
+        }
+      }
+
+      // Always exclude plan memos from pool
+      filtered = filtered.filter(m => {
+        const mTags = Array.isArray(m.tags) ? m.tags : [];
+        return !mTags.includes(CONFIG.PLAN_MEMO_TAG);
+      });
+
+      // For subtag mode, further filter to active subtag
+      if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.type === 'subtag') {
+        const activeSubTag = coverageService.getActiveSubTag(planEntry);
+        if (activeSubTag) {
+          filtered = filtered.filter(m => {
+            const mTags = Array.isArray(m.tags) ? m.tags : [];
+            return mTags.includes(activeSubTag);
+          });
+        }
+      }
+
+      // Save to plan-specific cache
+      storageUtils.setItem(
+        poolCacheKey,
+        JSON.stringify({ schemaVersion: CONFIG.DECK_SCHEMA_VERSION, timeRange, memos: filtered, timestamp: Date.now() })
+      );
+      return filtered;
     },
 
     buildBuckets(pool) {
@@ -4754,12 +5828,19 @@
       return [candidates[0].oldest, candidates[0].newest];
     },
 
-    buildDeckFromPool(pool, settings, today, batch) {
+    buildDeckFromPool(pool, settings, today, batch, planEntry) {
       const eligible = (pool || []).filter((m) => m && m.id && ((m.content || '').trim() !== '' || (m.attachments || []).length > 0));
       if (eligible.length === 0) return [];
 
-      const history = historyService.load();
       const seedPrefix = `${today}-${settings.timeRange}-${settings.count}-${batch}`;
+
+      // If we have an active plan, use coverage-first algorithm
+      if (planEntry && planEntry.data) {
+        return this.buildDeckCoverageFirst(eligible, settings, today, seedPrefix, planEntry);
+      }
+
+      // Legacy mode (no plan): use original algorithm
+      const history = historyService.load();
 
       const [oldest, middle, newest] = this.buildBuckets(eligible);
       const targets = this.allocateTargets(settings.count);
@@ -4770,7 +5851,6 @@
 
       let deck = this.interleave([selectedOldest, selectedMiddle, selectedNewest]);
 
-      // Add one "spark pair" (tag collision) if possible.
       const spark = this.findSparkPair(eligible, history, today, seedPrefix);
       if (spark) {
         const [a, b] = spark;
@@ -4807,13 +5887,101 @@
       return deck.slice(0, settings.count);
     },
 
-    async loadDeck(forceRegenerate = false) {
-      const settings = settingsService.load();
-      const today = utils.getDailySeed();
-      const key = deckService.makeKey(today, settings.timeRange, settings.count, this.deckBatch);
-      this.currentDeckKey = key;
+    buildDeckCoverageFirst(eligible, settings, today, seedPrefix, planEntry) {
+      const planHistory = planService.getHistory(planEntry);
+      const currentCycle = planHistory.coverage ? planHistory.coverage.cycle : 1;
+      const items = planHistory.items || {};
 
-      // Clear any pending loading timer
+      // Update coverage total and clean orphans
+      const poolIds = eligible.map(m => m.id);
+      coverageService.updateTotalInScope(planEntry, eligible.length);
+      coverageService.cleanOrphans(planEntry, poolIds);
+
+      // Separate unseen (not reviewed in current cycle) from seen
+      const unseen = [];
+      const seen = [];
+      for (const memo of eligible) {
+        const entry = items[memo.id];
+        if (!entry || entry.cycle < currentCycle) {
+          unseen.push(memo);
+        } else {
+          seen.push(memo);
+        }
+      }
+
+      // Check if cycle is complete
+      if (unseen.length === 0 && eligible.length > 0) {
+        coverageService.advanceCycle(planEntry);
+        this.cycleNotification = i18n.t('cycle_complete');
+        // After advancing, all are unseen in new cycle - recurse with updated state
+        return this.buildDeckCoverageFirst(eligible, settings, today, seedPrefix, planEntry);
+      }
+
+      // Build history-like object for scoring
+      const historyObj = { schemaVersion: CONFIG.DECK_SCHEMA_VERSION, items };
+
+      // Score unseen memos by priority
+      const scored = this.scoreByReviewPriority(unseen, historyObj, today, seedPrefix);
+
+      // Pick with diversity and NO_REPEAT_DAYS
+      const picked = [];
+      const pickedIds = new Set();
+      const relax = [CONFIG.NO_REPEAT_DAYS, 2, 1, 0];
+
+      for (const minDays of relax) {
+        if (picked.length >= settings.count) break;
+        while (picked.length < settings.count) {
+          const available = scored.filter(item =>
+            item.daysSince >= minDays && item.memo?.id && !pickedIds.has(item.memo.id)
+          );
+          if (available.length === 0) break;
+
+          let chosen = available[0];
+          if (CONFIG.DIVERSITY_PENALTY_ENABLED) {
+            const windowSize = Math.min(CONFIG.DIVERSITY_CANDIDATE_WINDOW, available.length);
+            let best = null;
+            for (let i = 0; i < windowSize; i++) {
+              const candidate = available[i];
+              const penalty = this.getDiversityPenalty(candidate.memo, picked);
+              if (!best || penalty < best.penalty || (penalty === best.penalty && i < best.index)) {
+                best = { penalty, index: i, item: candidate };
+              }
+            }
+            if (best && best.item) chosen = best.item;
+          }
+
+          const memo = chosen.memo;
+          if (!memo?.id) break;
+          pickedIds.add(memo.id);
+          picked.push(memo);
+        }
+      }
+
+      // If still not enough from unseen, fill from seen (least recently shown)
+      if (picked.length < settings.count && seen.length > 0) {
+        const seenScored = this.scoreByReviewPriority(seen, historyObj, today, `${seedPrefix}-fill`);
+        for (const item of seenScored) {
+          if (picked.length >= settings.count) break;
+          if (!item.memo?.id || pickedIds.has(item.memo.id)) continue;
+          pickedIds.add(item.memo.id);
+          picked.push(item.memo);
+        }
+      }
+
+      return picked.slice(0, settings.count);
+    },
+
+    async loadDeck(forceRegenerate = false) {
+      const activePlan = planService.getActivePlan();
+      const settings = activePlan && activePlan.data && activePlan.data.plan
+        ? { timeRange: activePlan.data.plan.timeRange, count: activePlan.data.plan.dailyCount }
+        : settingsService.load();
+      const today = utils.getDailySeed();
+      const planId = activePlan && activePlan.data && activePlan.data.plan ? activePlan.data.plan.id : '';
+      const key = deckService.makeKey(today, `${settings.timeRange}-${planId}`, settings.count, this.deckBatch);
+      this.currentDeckKey = key;
+      this.cycleNotification = null;
+
       if (this.loadingTimer) {
         clearTimeout(this.loadingTimer);
         this.loadingTimer = null;
@@ -4830,25 +5998,45 @@
         }
       }
 
-      // Delay showing loading state by 200ms to avoid flicker on fast loads
       this.loadingTimer = setTimeout(() => {
         ui.setReviewState('loading');
         this.loadingTimer = null;
       }, 200);
 
       try {
-        const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
-        const pool = await this.getPoolMemos(settings.timeRange, desiredPoolSize);
-        const deckMemos = this.buildDeckFromPool(pool, settings, today, this.deckBatch);
+        // Handle subtag mode: discover and select active subtag
+        if (activePlan && activePlan.data && activePlan.data.plan && activePlan.data.plan.type === 'subtag') {
+          await this.ensureActiveSubTag(activePlan, settings);
+        }
 
-        // Clear loading timer if still pending
+        const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
+        const pool = await this.getPoolMemos(settings.timeRange, desiredPoolSize, activePlan);
+        const deckMemos = this.buildDeckFromPool(pool, settings, today, this.deckBatch, activePlan);
+
         if (this.loadingTimer) {
           clearTimeout(this.loadingTimer);
           this.loadingTimer = null;
         }
 
         if (deckMemos.length === 0) {
-          ui.setReviewState('empty');
+          // Check if subtag mode and all subtags done
+          if (activePlan && activePlan.data && activePlan.data.plan && activePlan.data.plan.type === 'subtag') {
+            const parentTag = (activePlan.data.plan.tagFilter.tags || [])[0] || '';
+            // Fetch all memos with parent tag to discover subtags
+            const allPool = await this.getPoolMemos(settings.timeRange, 1000, null);
+            const filteredPool = allPool.filter(m => {
+              const mTags = Array.isArray(m.tags) ? m.tags : [];
+              return mTags.includes(parentTag);
+            });
+            const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
+            if (coverageService.isAllSubTagsDone(activePlan, allSubTags)) {
+              ui.setReviewState('empty', i18n.t('all_subtags_done'), i18n.t('all_subtags_done_hint'));
+            } else {
+              ui.setReviewState('empty', i18n.t('no_matching_memos'));
+            }
+          } else {
+            ui.setReviewState('empty', i18n.t('no_matching_memos'));
+          }
           return;
         }
 
@@ -4868,8 +6056,14 @@
         this.deckIndex = 0;
         ui.renderDeck(this.deckMemos, this.deckIndex);
         this.markViewedCurrent();
+        ui.updateProgressBar();
+
+        // Show cycle completion notification if triggered
+        if (this.cycleNotification) {
+          ui.showNotification(this.cycleNotification);
+          this.cycleNotification = null;
+        }
       } catch (error) {
-        // Clear loading timer on error
         if (this.loadingTimer) {
           clearTimeout(this.loadingTimer);
           this.loadingTimer = null;
@@ -4877,9 +6071,7 @@
 
         console.error('Failed to load daily review deck:', error);
 
-        // Determine specific error message based on error type
         let errorMessage = i18n.t('load_failed');
-
         if (error.message && error.message.includes('OFFLINE')) {
           errorMessage = i18n.t('offline_error');
         } else if (error.message && /API error: 401/.test(error.message)) {
@@ -4896,6 +6088,50 @@
 
         ui.setReviewState('error', errorMessage);
       }
+    },
+
+    async ensureActiveSubTag(planEntry, settings) {
+      if (!planEntry || !planEntry.data || !planEntry.data.subtags) return;
+      if (planEntry.data.subtags.active) return;
+
+      const parentTag = (planEntry.data.plan.tagFilter.tags || [])[0] || '';
+      if (!parentTag) return;
+
+      // Fetch pool without subtag filter to discover all subtags
+      const desiredPoolSize = this.estimateDesiredPoolSize(settings.timeRange, settings.count);
+      const allPool = await this.getPoolMemos(settings.timeRange, desiredPoolSize, null);
+      const filteredPool = allPool.filter(m => {
+        const mTags = Array.isArray(m.tags) ? m.tags : [];
+        return mTags.includes(parentTag) && !mTags.includes(CONFIG.PLAN_MEMO_TAG);
+      });
+      const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
+
+      if (allSubTags.length === 0) return;
+
+      // Check if current subtag review is complete
+      const activeSubTag = coverageService.getActiveSubTag(planEntry);
+      if (activeSubTag) {
+        const subTagPool = filteredPool.filter(m => {
+          const mTags = Array.isArray(m.tags) ? m.tags : [];
+          return mTags.includes(activeSubTag);
+        });
+        if (coverageService.isCycleComplete(planEntry, subTagPool)) {
+          coverageService.markSubTagDone(planEntry, activeSubTag);
+          this.cycleNotification = i18n.t('subtag_complete');
+          // Clear pool cache to force re-fetch with new subtag
+          const planId = planEntry.data.plan.id;
+          localStorage.removeItem(`${CONFIG.POOL_KEY}-${planId}`);
+        }
+      }
+
+      // Select next subtag if none active
+      if (!planEntry.data.subtags.active) {
+        const next = coverageService.selectNextSubTag(planEntry, allSubTags);
+        if (!next) {
+          // All done
+          this.cycleNotification = i18n.t('all_subtags_done');
+        }
+      }
     }
   };
 
@@ -4911,7 +6147,12 @@
       apiService,
       controller,
       capabilityService,
-      storageUtils
+      storageUtils,
+      stateService,
+      syncService,
+      planService,
+      coverageService,
+      migrationService
     };
     return;
   }
