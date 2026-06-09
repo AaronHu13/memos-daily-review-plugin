@@ -2775,6 +2775,7 @@
 
     isAllSubTagsDone(planEntry, allSubTags) {
       if (!planEntry || !planEntry.data || !planEntry.data.subtags) return false;
+      if (!allSubTags || allSubTags.length === 0) return false;
       const done = new Set(planEntry.data.subtags.done || []);
       return allSubTags.every(tag => done.has(tag));
     },
@@ -5596,8 +5597,10 @@
 
       // Apply tag filtering for plan
       let filtered = normalized;
+      console.log('[DailyReview] Pool before filter:', normalized.length, 'memos. Plan:', planEntry?.data?.plan?.name);
       if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.tagFilter) {
         const tf = planEntry.data.plan.tagFilter;
+        console.log('[DailyReview] Tag filter:', JSON.stringify(tf));
         if (tf.mode === 'include' && tf.tags && tf.tags.length > 0) {
           const filterTags = tf.tags.map(t => t.replace(/^#/, ''));
           if (tf.logic === 'and') {
@@ -5620,11 +5623,13 @@
         }
       }
 
+      console.log('[DailyReview] Pool after tag filter:', filtered.length);
       // Always exclude plan memos from pool
       filtered = filtered.filter(m => {
         const mTags = Array.isArray(m.tags) ? m.tags : [];
         return !mTags.includes(CONFIG.PLAN_MEMO_TAG);
       });
+      console.log('[DailyReview] Pool after excluding plan memos:', filtered.length);
 
       // For subtag mode, further filter to active subtag
       if (planEntry && planEntry.data && planEntry.data.plan && planEntry.data.plan.type === 'subtag') {
@@ -6019,17 +6024,20 @@
         }
 
         if (deckMemos.length === 0) {
-          // Check if subtag mode and all subtags done
+          console.log('[DailyReview] Empty deck. Plan type:', activePlan?.data?.plan?.type, 'Pool size:', pool.length);
           if (activePlan && activePlan.data && activePlan.data.plan && activePlan.data.plan.type === 'subtag') {
             const parentTag = (activePlan.data.plan.tagFilter.tags || [])[0] || '';
-            // Fetch all memos with parent tag to discover subtags
             const allPool = await this.getPoolMemos(settings.timeRange, 1000, null);
             const filteredPool = allPool.filter(m => {
               const mTags = Array.isArray(m.tags) ? m.tags : [];
               return mTags.includes(parentTag);
             });
             const allSubTags = coverageService.discoverSubTags(filteredPool, parentTag);
-            if (coverageService.isAllSubTagsDone(activePlan, allSubTags)) {
+            console.log('[DailyReview] SubTag discovery - parent:', parentTag, 'found:', allSubTags.length, 'subtags:', allSubTags.slice(0, 5));
+            if (allSubTags.length === 0) {
+              // No sub-tags found — fall back to flat coverage of all memos with parent tag
+              ui.setReviewState('empty', i18n.t('no_matching_memos'));
+            } else if (coverageService.isAllSubTagsDone(activePlan, allSubTags)) {
               ui.setReviewState('empty', i18n.t('all_subtags_done'), i18n.t('all_subtags_done_hint'));
             } else {
               ui.setReviewState('empty', i18n.t('no_matching_memos'));
